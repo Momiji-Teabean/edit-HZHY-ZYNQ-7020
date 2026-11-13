@@ -1,0 +1,23 @@
+Current lwipopts.h / BSP key values
+
+bsp.yaml:
+  lwip220_dhcp = true
+  lwip220_pbuf_pool_size = 16384
+  lwip220_mem_size = 524288
+  XILTIMER_en_interval_timer = true
+  XILTIMER_sleep_timer = Default
+  XILTIMER_tick_timer = None
+
+lwipopts.h:
+  NO_SYS = 1
+  SYS_LIGHTWEIGHT_PROT = 1
+  MEM_SIZE = 524288
+  MEMP_NUM_PBUF = 1024
+  PBUF_POOL_SIZE = 16384
+  LWIP_DHCP = 1
+  LWIP_DHCP_DOES_ACD_CHECK = 1
+  LWIP_UDP = 1
+  LWIP_TCP = 1
+  TCP_MSS = 1460
+  TCP_SND_BUF = 65535
+  TCP_WND = 65535

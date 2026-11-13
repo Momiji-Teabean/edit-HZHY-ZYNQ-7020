@@ -1,0 +1,356 @@
+diff --git a/netif/xemacpsif_physpeed.c b/netif/xemacpsif_physpeed.c
+index 8d156e2..b32006c 100644
+--- a/netif/xemacpsif_physpeed.c
++++ b/netif/xemacpsif_physpeed.c
+@@ -126,10 +126,19 @@
+ #define PHY_TI_IDENTIFIER					0x2000
+ #define PHY_ADI_IDENTIFIER				0x0283
+ #define PHY_REALTEK_IDENTIFIER				0x001c
+ #define PHY_XILINX_PCS_PMA_ID1			0x0174
+ #define PHY_XILINX_PCS_PMA_ID2			0x0C00
++#define PHY_YT8521_ID1					0x0000
++#define PHY_YT8521_ID2					0x011A
++#define PHY_YT8521_EXT_ADDR_REG			0x1E
++#define PHY_YT8521_EXT_DATA_REG			0x1F
++#define PHY_YT8521_UTP_PAGE_REG			0xA000
++#define PHY_YT8521_SLEEP_CTRL_REG		0x27
++#define PHY_YT8521_RXC_CLK_REG			0x0C
++#define PHY_YT8521_RGMII_CTRL_REG		0xA001
++#define PHY_YT8521_RGMII_DELAY_REG		0xA003
+ 
+ #define XEMACPS_GMII2RGMII_SPEED1000_FD		0x140
+ #define XEMACPS_GMII2RGMII_SPEED100_FD		0x2100
+ #define XEMACPS_GMII2RGMII_SPEED10_FD		0x100
+ #define XEMACPS_GMII2RGMII_REG_NUM			0x10
+@@ -190,40 +199,71 @@ static u32_t configure_IEEE_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr, u32_t s
+ #endif
+ 
+ static void phy_identify(XEmacPs *xemacpsp, u32_t phy_addr, u32_t emacnum)
+ {
+ 	u16_t phy_reg;
+-	u16_t phy_id;
++	u16_t phy_id1;
++	u16_t phy_id2;
+ 
+ 	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_DETECT_REG,
+ 			&phy_reg);
+ 	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_IDENTIFIER_1_REG,
+-			&phy_id);
++			&phy_id1);
++	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_IDENTIFIER_2_REG,
++			&phy_id2);
++
++	/* Keep the MDIO scan bounded but show the two addresses that matter
++	 * for this board: schematic address 1 and the currently detected address 7.
++	 */
++	if ((phy_addr == 1U) || (phy_addr == 7U)) {
++		xil_printf("MDIO %d: ID1=%04x ID2=%04x BMSR=%04x\r\n",
++			   phy_addr, phy_id1, phy_id2, phy_reg);
++	}
+ 
+ 	if (((phy_reg != 0xFFFF) &&
+ 	     ((phy_reg & PHY_DETECT_MASK) == PHY_DETECT_MASK)) ||
+-	    (phy_id == PHY_XILINX_PCS_PMA_ID1)) {
++	    (phy_id1 == PHY_XILINX_PCS_PMA_ID1) ||
++	    ((phy_id1 == PHY_YT8521_ID1) && (phy_id2 == PHY_YT8521_ID2))) {
+ 		/* Found a valid PHY address */
+ 		LWIP_DEBUGF(NETIF_DEBUG, ("XEmacPs detect_phy: PHY detected at address %d.\r\n",
+ 					  phy_addr));
+ 		if (emacnum == 0) {
+ 			phymapemac0[phy_addr] = TRUE;
+ 		} else {
+ 			phymapemac1[phy_addr] = TRUE;
+ 		}
+ 
+-		XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_IDENTIFIER_1_REG,
+-				&phy_reg);
+-		if ((phy_reg != PHY_MARVELL_IDENTIFIER) &&
+-		    (phy_reg != PHY_TI_IDENTIFIER) &&
+-		    (phy_reg != PHY_REALTEK_IDENTIFIER) &&
+-		    (phy_reg != PHY_ADI_IDENTIFIER)) {
+-			xil_printf("WARNING: Not a Marvell or TI or Realtek or Xilinx PCS PMA Ethernet PHY or ADI Ethernet PHY. Please verify the initialization sequence\r\n");
++		if ((phy_id1 != PHY_MARVELL_IDENTIFIER) &&
++		    (phy_id1 != PHY_TI_IDENTIFIER) &&
++		    (phy_id1 != PHY_REALTEK_IDENTIFIER) &&
++		    (phy_id1 != PHY_ADI_IDENTIFIER) &&
++		    !((phy_id1 == PHY_YT8521_ID1) && (phy_id2 == PHY_YT8521_ID2))) {
++			xil_printf("WARNING: Unrecognized Ethernet PHY ID1=%04x ID2=%04x at address %d\r\n",
++				   phy_id1, phy_id2, phy_addr);
+ 		}
+ 	}
+ }
+ 
++static void phy_yt8521_read_ext(XEmacPs *xemacpsp, u32_t phy_addr,
++				u16_t ext_addr, u16_t *ext_data)
++{
++	/* Same access sequence as Motorcomm's official Linux driver. The
++	 * address-offset register is intentionally left at the last accessed
++	 * extended register; writing it back to zero is not required and can
++	 * disturb subsequent standard MII register accesses.
++	 */
++	XEmacPs_PhyWrite(xemacpsp, phy_addr, PHY_YT8521_EXT_ADDR_REG, ext_addr);
++	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_YT8521_EXT_DATA_REG, ext_data);
++}
++
++static void phy_yt8521_write_ext(XEmacPs *xemacpsp, u32_t phy_addr,
++				 u16_t ext_addr, u16_t ext_data)
++{
++	XEmacPs_PhyWrite(xemacpsp, phy_addr, PHY_YT8521_EXT_ADDR_REG, ext_addr);
++	XEmacPs_PhyWrite(xemacpsp, phy_addr, PHY_YT8521_EXT_DATA_REG, ext_data);
++}
++
+ static u32_t get_Xilinx_pcs_pma_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr)
+ {
+ 
+ #if XPAR_GIGE_PCS_PMA_1000BASEX_CORE_PRESENT == 1 || \
+     XPAR_GIGE_PCS_PMA_SGMII_CORE_PRESENT == 1 || defined(SDT)
+@@ -974,22 +1014,166 @@ static u32_t get_Adi_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr)
+ 	}
+ 
+ 	return XST_SUCCESS;
+ }
+ 
++static u32_t get_YT8521_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr)
++{
++	u16_t control;
++	u16_t status;
++	u16_t status_speed;
++	u16_t id1 = 0;
++	u16_t id2 = 0;
++	u16_t rgmii_ctrl = 0;
++	u16_t rgmii_delay = 0;
++	u16_t page_sel = 0;
++	u16_t sleep_ctrl = 0;
++	u16_t rxclk = 0;
++	u16_t txdly_rd = 0;
++	u16_t txdly_after_an = 0;
++	u32_t timeout_counter = 0;
++	u32_t temp_speed;
++
++	xil_printf("Start YT8521 PHY autonegotiation\r\n");
++
++	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_IDENTIFIER_1_REG, &id1);
++	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_IDENTIFIER_2_REG, &id2);
++
++	/* Reset the PHY so all vendor registers return to their hardware
++	 * strap defaults before applying the official YT8521 init sequence.
++	 */
++	XEmacPs_PhyWrite(xemacpsp, phy_addr, IEEE_CONTROL_REG_OFFSET, 0x8000U);
++	for (timeout_counter = 0; timeout_counter < 100000U; timeout_counter++) {
++		XEmacPs_PhyRead(xemacpsp, phy_addr, IEEE_CONTROL_REG_OFFSET, &control);
++		if ((control & 0x8000U) == 0U) {
++			break;
++		}
++	}
++	xil_printf("YT8521 PHY reset done, BMCR=%04x\r\n", control);
++
++	/* YT8521 has two extended register banks: UTP (copper) and fiber/
++	 * SerDes, selected by 0xA000. The UTP page must be active before the
++	 * RGMII control/delay registers are touched.
++	 */
++	phy_yt8521_write_ext(xemacpsp, phy_addr, PHY_YT8521_UTP_PAGE_REG,
++			     0x0000U);
++
++	/* Official YT8521 initialisation steps taken from the Motorcomm driver. */
++	phy_yt8521_read_ext(xemacpsp, phy_addr, PHY_YT8521_SLEEP_CTRL_REG, &sleep_ctrl);
++	sleep_ctrl &= (u16_t)~0x8000U;	/* bit15: disable auto-sleep */
++	phy_yt8521_write_ext(xemacpsp, phy_addr, PHY_YT8521_SLEEP_CTRL_REG, sleep_ctrl);
++
++	/* Official YT8521 init: keep RXC clock enabled; do not modify TX delay. */
++	phy_yt8521_read_ext(xemacpsp, phy_addr, PHY_YT8521_RXC_CLK_REG, &rxclk);
++	rxclk &= (u16_t)~0x1000U;
++	phy_yt8521_write_ext(xemacpsp, phy_addr, PHY_YT8521_RXC_CLK_REG, rxclk);
++	phy_yt8521_read_ext(xemacpsp, phy_addr, PHY_YT8521_RXC_CLK_REG, &txdly_rd);
++	xil_printf("YT8521 sleep=%04x rxc_clk=%04x tx_dly_readback=%04x\r\n",
++		   sleep_ctrl, rxclk, txdly_rd);
++	phy_yt8521_read_ext(xemacpsp, phy_addr, PHY_YT8521_UTP_PAGE_REG,
++			    &page_sel);
++	phy_yt8521_read_ext(xemacpsp, phy_addr, PHY_YT8521_RGMII_CTRL_REG,
++			    &rgmii_ctrl);
++	phy_yt8521_read_ext(xemacpsp, phy_addr, PHY_YT8521_RGMII_DELAY_REG,
++			    &rgmii_delay);
++	rgmii_delay = 0x00FDU; /* MIO 12mA: 1000M TX delay 13*150ps=1.95ns. */
++	phy_yt8521_write_ext(xemacpsp, phy_addr, PHY_YT8521_RGMII_DELAY_REG, rgmii_delay);
++	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_STS, &status_speed);
++	xil_printf("YT8521 ID1=%04x ID2=%04x A000=%04x A001=%04x A003=%04x REG11=%04x\r\n",
++		   id1, id2, page_sel, rgmii_ctrl, rgmii_delay, status_speed);	/* Official YT8521 init leaves A001/A003 at their hardware strap values. */
++	xil_printf("YT8521 RGMII registers: A001=%04x A003=%04x\r\n",
++		   rgmii_ctrl, rgmii_delay);
++
++	/* Advertise all supported copper speeds and pause capability. */
++	XEmacPs_PhyRead(xemacpsp, phy_addr, IEEE_AUTONEGO_ADVERTISE_REG, &control);
++	control |= IEEE_ASYMMETRIC_PAUSE_MASK;
++	control |= IEEE_PAUSE_MASK;
++	control |= ADVERTISE_100;
++	control |= ADVERTISE_10;
++	XEmacPs_PhyWrite(xemacpsp, phy_addr, IEEE_AUTONEGO_ADVERTISE_REG, control);
++
++	XEmacPs_PhyRead(xemacpsp, phy_addr, IEEE_1000_ADVERTISE_REG_OFFSET,
++			&control);
++	control |= ADVERTISE_1000;
++	XEmacPs_PhyWrite(xemacpsp, phy_addr, IEEE_1000_ADVERTISE_REG_OFFSET,
++			 control);
++
++	XEmacPs_PhyRead(xemacpsp, phy_addr, IEEE_CONTROL_REG_OFFSET, &control);
++	control |= IEEE_CTRL_AUTONEGOTIATE_ENABLE;
++	control |= IEEE_STAT_AUTONEGOTIATE_RESTART;
++	XEmacPs_PhyWrite(xemacpsp, phy_addr, IEEE_CONTROL_REG_OFFSET, control);
++
++	XEmacPs_PhyRead(xemacpsp, phy_addr, IEEE_STATUS_REG_OFFSET, &status);
++	xil_printf("Waiting for YT8521 autonegotiation.\r\n");
++
++	while (!(status & IEEE_STAT_AUTONEGOTIATE_COMPLETE)) {
++		sleep(1);
++		XEmacPs_PhyRead(xemacpsp, phy_addr, IEEE_STATUS_REG_OFFSET,
++				&status);
++		timeout_counter++;
++		if (timeout_counter >= 30U) {
++			xil_printf("YT8521 auto negotiation timeout, BMSR=%04x\r\n", status);
++			return XST_FAILURE;
++		}
++	}
++	xil_printf("YT8521 autonegotiation complete, BMSR=%04x\r\n", status);
++
++	phy_yt8521_read_ext(xemacpsp, phy_addr, PHY_YT8521_RGMII_DELAY_REG, &txdly_after_an);
++	xil_printf("YT8521 A003 after AN=%04x\r\n", txdly_after_an);
++	if (txdly_after_an != rgmii_delay) {
++		phy_yt8521_write_ext(xemacpsp, phy_addr, PHY_YT8521_RGMII_DELAY_REG, rgmii_delay);
++		phy_yt8521_read_ext(xemacpsp, phy_addr, PHY_YT8521_RGMII_DELAY_REG, &txdly_after_an);
++		xil_printf("YT8521 A003 restored=%04x\r\n", txdly_after_an);
++	}
++	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_STS, &status_speed);
++	xil_printf("YT8521 REG11 after AN=%04x\r\n", status_speed);
++	/* YT8521 packet generator diagnostic */
++	{
++		u16_t pkg_cfg_before = 0;
++		u16_t pkg_cfg_stop = 0;
++		phy_yt8521_read_ext(xemacpsp, phy_addr, 0xA0U, &pkg_cfg_before);
++		phy_yt8521_write_ext(xemacpsp, phy_addr, 0xA1U, 0x0040U);
++		phy_yt8521_write_ext(xemacpsp, phy_addr, 0xA2U, 0x0000U);
++		phy_yt8521_write_ext(xemacpsp, phy_addr, 0xA0U, 0x18D0U);
++		xil_printf("YT8521 PKG generator ON A0before=%04x\r\n", pkg_cfg_before);
++		sleep(2);
++		phy_yt8521_write_ext(xemacpsp, phy_addr, 0xA0U,
++				     (u16_t)((pkg_cfg_before & (u16_t)~0x1000U) | 0x6000U));
++		phy_yt8521_read_ext(xemacpsp, phy_addr, 0xA0U, &pkg_cfg_stop);
++		phy_yt8521_write_ext(xemacpsp, phy_addr, 0xA0U, pkg_cfg_before);
++		xil_printf("YT8521 PKG generator OFF A0stop=%04x restored=%04x\r\n",
++			   pkg_cfg_stop, pkg_cfg_before);
++	}
++	if ((status_speed & 0x0400U) == 0U) {
++		xil_printf("YT8521 reports link down in REG11.\r\n");
++	}
++
++	temp_speed = status_speed & 0xC000U;
++	if (temp_speed == 0x8000U) {
++		return 1000;
++	} else if (temp_speed == 0x4000U) {
++		return 100;
++	} else {
++		return 10;
++	}
++}
++
+ static u32_t get_IEEE_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr)
+ {
+ 	u16_t phy_identity;
++	u16_t phy_identity2;
+ 	u32_t RetStatus;
+ 	char *PhyType;
+ 
+ #ifdef SDT
+ 	PhyType = xemacpsp->Config.PhyType;
+ #endif
+ 
+ 	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_IDENTIFIER_1_REG,
+ 					&phy_identity);
++	XEmacPs_PhyRead(xemacpsp, phy_addr, PHY_IDENTIFIER_2_REG,
++					&phy_identity2);
+ 	if (phy_identity == PHY_TI_IDENTIFIER) {
+ 		if (!strcmp(PhyType, "sgmii")) {
+ 			RetStatus = get_TI_phy_speed_sgmii(xemacpsp, phy_addr);
+ 		} else {
+ 			RetStatus = get_TI_phy_speed(xemacpsp, phy_addr);
+@@ -998,10 +1182,13 @@ static u32_t get_IEEE_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr)
+ 		RetStatus = get_Realtek_phy_speed(xemacpsp, phy_addr);
+ 	} else if (phy_identity == PHY_XILINX_PCS_PMA_ID1) {
+ 		RetStatus = get_Xilinx_pcs_pma_phy_speed(xemacpsp, phy_addr);
+ 	} else if (phy_identity == PHY_ADI_IDENTIFIER) {
+ 		RetStatus = get_Adi_phy_speed(xemacpsp, phy_addr);
++	} else if ((phy_identity == PHY_YT8521_ID1) &&
++		   (phy_identity2 == PHY_YT8521_ID2)) {
++		RetStatus = get_YT8521_phy_speed(xemacpsp, phy_addr);
+ 	} else {
+ 		RetStatus = get_Marvell_phy_speed(xemacpsp, phy_addr);
+ 	}
+ 
+ 	return RetStatus;
+@@ -1100,10 +1287,60 @@ static u32_t configure_IEEE_phy_speed(XEmacPs *xemacpsp, u32_t phy_addr, u32_t s
+ #endif
+ 
+ static void SetUpSLCRDivisors(XEmacPs *xemacpsp __attribute__((unused)),
+                               s32_t speed __attribute__((unused)))
+ {
++#ifdef SDT
++	/* The SDT build has no XPAR_PS7_ETHERNET_*_ENET_SLCR_* macros, so
++	 * the legacy divisor code below is compiled out. Zynq-7000 still
++	 * needs GEM0_CLK_CTRL updated when the PHY changes link speed; the
++	 * reset values from ps7_init are the 1000 Mbps setting. Leaving them
++	 * unchanged makes RGMII RX work while TX runs at the wrong clock.
++	 */
++	UINTPTR mac_baseaddr = xemacpsp->Config.BaseAddress;
++	u32_t gem_version = ((Xil_In32(mac_baseaddr + 0xFCU) >> 16) & 0xFFFU);
++	u32_t div0;
++	u32_t div1;
++	u32_t gem_clk_ctrl_addr;
++	u32_t gem_clk_ctrl;
++
++	if (gem_version == 2U) {
++		if (mac_baseaddr == ZYNQ_EMACPS_0_BASEADDR) {
++			gem_clk_ctrl_addr = SLCR_GEM0_CLK_CTRL_ADDR;
++		} else if (mac_baseaddr == ZYNQ_EMACPS_1_BASEADDR) {
++			gem_clk_ctrl_addr = SLCR_GEM1_CLK_CTRL_ADDR;
++		} else {
++			return;
++		}
++
++		/* Values match ps7_init / the legacy XPAR settings. */
++		if (speed == 1000) {
++			div0 = 8U;
++			div1 = 1U;
++		} else if (speed == 100) {
++			div0 = 8U;
++			div1 = 5U;
++		} else {
++			div0 = 8U;
++			div1 = 50U;
++		}
++
++		Xil_Out32(SLCR_UNLOCK_ADDR, SLCR_UNLOCK_KEY_VALUE);
++		gem_clk_ctrl = Xil_In32(gem_clk_ctrl_addr);
++		gem_clk_ctrl &= ~0x03F03F00U;
++		gem_clk_ctrl |= (div1 << 20) | (div0 << 8);
++		gem_clk_ctrl |= 0x00000001U;
++		Xil_Out32(gem_clk_ctrl_addr, gem_clk_ctrl);
++		Xil_Out32(SLCR_LOCK_ADDR, SLCR_LOCK_KEY_VALUE);
++
++		xil_printf("ZYNQ GEM0 clock speed=%d div0=%d div1=%d ctrl=%08x\r\n",
++			   (int)speed, (unsigned int)div0, (unsigned int)div1,
++			   (unsigned int)Xil_In32(gem_clk_ctrl_addr));
++	}
++	return;
++#endif
++
+ #ifndef SDT
+ 	volatile UINTPTR slcrBaseAddress;
+ 	u32_t SlcrDiv0 = 0;
+ 	u32_t SlcrDiv1 = 0;
+ 	u32_t SlcrTxClkCntrl;
+@@ -1488,5 +1725,7 @@ void MacConfig_SgmiiPcs(XEmacPs *xemacpsp, u32_t phy_addr) {
+ 		/* Write the updated value back to the PCS_CONTROL register */
+ 		XEmacPs_WriteReg(xemacpsp->Config.BaseAddress, XEMACPS_PCS_CONTROL_OFFSET, status);
+ 	}
+ #endif
+ }
++
++
